@@ -3,6 +3,7 @@
 ARG FLAVOR=${TARGETARCH}
 
 ARG ROCMVERSION=7.2
+ARG OPENVINOVERSION=2026.0.0
 ARG JETPACK5VERSION=r35.4.1
 ARG JETPACK6VERSION=r36.4.0
 ARG CMAKEVERSION=3.31.2
@@ -142,6 +143,19 @@ RUN --mount=type=cache,target=/root/.ccache \
         && cmake --build --preset 'Vulkan' -- -l $(nproc) \
         && cmake --install build --component Vulkan --strip
 
+FROM base AS openvino-build
+ARG OPENVINOVERSION
+RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ python3 python3-pip \
+    && python3 -m pip install --no-cache-dir "openvino==${OPENVINOVERSION}"
+ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
+COPY CMakeLists.txt CMakePresets.json .
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+RUN --mount=type=cache,target=/root/.ccache \
+    OPENVINO_DIR="$(python3 -c "import importlib.util, pathlib; spec = importlib.util.find_spec('openvino'); assert spec is not None; print(pathlib.Path(spec.origin).resolve().parent / 'runtime' / 'cmake')")" \
+        && cmake --preset 'OpenVINO' -DOpenVINO_DIR="${OPENVINO_DIR}" \
+        && cmake --build --preset 'OpenVINO' -- -l $(nproc) \
+        && cmake --install build --component OpenVINO --strip
+
 FROM base AS mlx
 ARG CUDA13VERSION=13.0
 RUN dnf install -y cuda-toolkit-${CUDA13VERSION//./-} \
@@ -206,6 +220,9 @@ COPY --from=jetpack-6 dist/lib/ollama/ /lib/ollama/
 
 FROM scratch AS rocm
 COPY --from=rocm-7 dist/lib/ollama /lib/ollama
+
+FROM scratch AS openvino
+COPY --from=openvino-build dist/lib/ollama /lib/ollama
 
 FROM ${FLAVOR} AS archive
 COPY --from=cpu dist/lib/ollama /lib/ollama

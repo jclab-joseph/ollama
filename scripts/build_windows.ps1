@@ -256,6 +256,43 @@ function vulkan {
     }
 }
 
+function resolveOpenVinoDir {
+    if ($env:OpenVINO_DIR -and (Test-Path $env:OpenVINO_DIR)) {
+        return $env:OpenVINO_DIR
+    }
+
+    if ($env:OPENVINO_DIR -and (Test-Path $env:OPENVINO_DIR)) {
+        return $env:OPENVINO_DIR
+    }
+
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $resolved = & py -3 -c "import importlib.util, pathlib; spec = importlib.util.find_spec('openvino'); print((pathlib.Path(spec.origin).resolve().parent / 'runtime' / 'cmake')) if spec else None" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $resolved -and (Test-Path $resolved.Trim())) {
+            return $resolved.Trim()
+        }
+    }
+
+    return $null
+}
+
+function openvino {
+    mkdir -Force -path "${script:DIST_DIR}\" | Out-Null
+    if ($script:ARCH -ne "arm64") {
+        $openvinoDir = resolveOpenVinoDir
+        if ($openvinoDir) {
+            Write-Output "Building OpenVINO backend libraries $openvinoDir"
+            & cmake -B build\openvino --preset OpenVINO -DOpenVINO_DIR="$openvinoDir" --install-prefix $script:DIST_DIR
+            if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+            & cmake --build build\openvino --target ggml-openvino --config Release --parallel $script:JOBS
+            if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+            & cmake --install build\openvino --component OpenVINO --strip
+            if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+        } else {
+            Write-Output "OpenVINO not detected, skipping"
+        }
+    }
+}
+
 function mlxCuda13 {
     mkdir -Force -path "${script:DIST_DIR}\" | Out-Null
     $cudaMajorVer="13"
@@ -478,6 +515,12 @@ function zip {
                 $jobs += newZipJob "${distDir}\windows-amd64-rocm" "${distDir}\ollama-windows-amd64-rocm.zip"
             }
 
+            # Stage OpenVINO into its own directory for independent compression
+            if (stageComponents $amd64Dir "${distDir}\windows-amd64-openvino" "openvino*" "OpenVINO") {
+                Write-Output "Generating ${distDir}\ollama-windows-amd64-openvino.zip"
+                $jobs += newZipJob "${distDir}\windows-amd64-openvino" "${distDir}\ollama-windows-amd64-openvino.zip"
+            }
+
             # Stage MLX into its own directory for independent compression
             if (stageComponents $amd64Dir "${distDir}\windows-amd64-mlx" "mlx_*" "MLX") {
                 Write-Output "Generating ${distDir}\ollama-windows-amd64-mlx.zip"
@@ -511,6 +554,7 @@ function zip {
     } finally {
         # Always restore staged components back into the main tree
         restoreComponents $amd64Dir "${distDir}\windows-amd64-rocm"
+        restoreComponents $amd64Dir "${distDir}\windows-amd64-openvino"
         restoreComponents $amd64Dir "${distDir}\windows-amd64-mlx"
     }
 }
@@ -528,6 +572,7 @@ try {
         cuda13
         rocm6
         vulkan
+        openvino
         mlxCuda13
         ollama
         app
